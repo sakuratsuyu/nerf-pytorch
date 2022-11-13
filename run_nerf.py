@@ -542,25 +542,30 @@ def train():
         images, poses, bds, render_poses, i_test = load_llff_data(args.datadir, args.factor,
                                                                   recenter=True, bd_factor=.75,
                                                                   spherify=args.spherify)
+        # Split `poses` to `hwf` and the real `poses`
         hwf = poses[0,:3,-1]
         poses = poses[:,:3,:4]
         print('Loaded llff', images.shape, render_poses.shape, hwf, args.datadir)
+        # transfer `i_test` to list if not
         if not isinstance(i_test, list):
             i_test = [i_test]
-
+        
+        # choose the testing data
         if args.llffhold > 0:
             print('Auto LLFF holdout,', args.llffhold)
             i_test = np.arange(images.shape[0])[::args.llffhold]
 
+        # validation data is the same as the testing data
         i_val = i_test
+        # the rest is the training data
         i_train = np.array([i for i in np.arange(int(images.shape[0])) if
                         (i not in i_test and i not in i_val)])
 
+        # define 'near' and 'far' bounds
         print('DEFINING BOUNDS')
         if args.no_ndc:
             near = np.ndarray.min(bds) * .9
             far = np.ndarray.max(bds) * 1.
-            
         else:
             near = 0.
             far = 1.
@@ -570,12 +575,13 @@ def train():
         images, poses, render_poses, hwf, i_split = load_blender_data(args.datadir, args.half_res, args.testskip)
         print('Loaded blender', images.shape, render_poses.shape, hwf, args.datadir)
         i_train, i_val, i_test = i_split
-
+        
+        # define 'near' and 'far' bounds
         near = 2.
         far = 6.
 
         if args.white_bkgd:
-            images = images[...,:3]*images[...,-1:] + (1.-images[...,-1:])
+            images = images[...,:3] * images[..., -1:] + (1. - images[...,-1:])
         else:
             images = images[...,:3]
 
@@ -873,6 +879,6 @@ def train():
 
 
 if __name__=='__main__':
-    torch.set_default_tensor_type('torch.cuda.FloatTensor')
+    # torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
     train()

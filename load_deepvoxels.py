@@ -25,7 +25,7 @@ def load_dv_data(scene='cube', basedir='/data/deepvoxels', testskip=8):
 
         world2cam_poses = bool(world2cam_poses)
 
-        print(cx,cy,f,height,width)
+        print(cx, cy, f, height, width)
 
         cx = cx / width * trgt_sidelength
         cy = cy / height * trgt_sidelength
@@ -39,9 +39,9 @@ def load_dv_data(scene='cube', basedir='/data/deepvoxels', testskip=8):
 
         # Build the intrinsic matrices
         full_intrinsic = np.array([[fx, 0., cx, 0.],
-                                   [0., fy, cy, 0],
-                                   [0., 0, 1, 0],
-                                   [0, 0, 0, 1]])
+                                   [0., fy, cy, 0.],
+                                   [0., 0., 1., 0.],
+                                   [0., 0., 0., 1.]])
 
         return full_intrinsic, grid_barycenter, scale, near_plane, world2cam_poses
 
@@ -65,15 +65,16 @@ def load_dv_data(scene='cube', basedir='/data/deepvoxels', testskip=8):
     def dir2poses(posedir):
         poses = np.stack([load_pose(os.path.join(posedir, f)) for f in sorted(os.listdir(posedir)) if f.endswith('txt')], 0)
         transf = np.array([
-            [1,0,0,0],
-            [0,-1,0,0],
-            [0,0,-1,0],
-            [0,0,0,1.],
+            [1,  0,  0, 0],
+            [0, -1,  0, 0],
+            [0,  0, -1, 0],
+            [0,  0,  0, 1.],
         ])
         poses = poses @ transf
-        poses = poses[:,:3,:4].astype(np.float32)
+        poses = poses[:, :3, :4].astype(np.float32)
         return poses
     
+    # Load pose data
     posedir = os.path.join(deepvoxels_base, 'pose')
     poses = dir2poses(posedir)
     testposes = dir2poses('{}/test/{}/pose'.format(basedir, scene))
@@ -81,26 +82,31 @@ def load_dv_data(scene='cube', basedir='/data/deepvoxels', testskip=8):
     valposes = dir2poses('{}/validation/{}/pose'.format(basedir, scene))
     valposes = valposes[::testskip]
 
+    # Load training image data
     imgfiles = [f for f in sorted(os.listdir(os.path.join(deepvoxels_base, 'rgb'))) if f.endswith('png')]
     imgs = np.stack([imageio.imread(os.path.join(deepvoxels_base, 'rgb', f))/255. for f in imgfiles], 0).astype(np.float32)
     
-    
+    # Load testing image data
     testimgd = '{}/test/{}/rgb'.format(basedir, scene)
     imgfiles = [f for f in sorted(os.listdir(testimgd)) if f.endswith('png')]
     testimgs = np.stack([imageio.imread(os.path.join(testimgd, f))/255. for f in imgfiles[::testskip]], 0).astype(np.float32)
     
+    # Load validation image data
     valimgd = '{}/validation/{}/rgb'.format(basedir, scene)
     imgfiles = [f for f in sorted(os.listdir(valimgd)) if f.endswith('png')]
     valimgs = np.stack([imageio.imread(os.path.join(valimgd, f))/255. for f in imgfiles[::testskip]], 0).astype(np.float32)
     
     all_imgs = [imgs, valimgs, testimgs]
+    # Count the number of images in train, val and test datasets respectively
     counts = [0] + [x.shape[0] for x in all_imgs]
     counts = np.cumsum(counts)
-    i_split = [np.arange(counts[i], counts[i+1]) for i in range(3)]
+    # Get the indices of train, val and test datasets
+    i_split = [np.arange(counts[i], counts[i + 1]) for i in range(3)]
     
     imgs = np.concatenate(all_imgs, 0)
     poses = np.concatenate([poses, valposes, testposes], 0)
     
+    # `render_poses` is the `testposes`
     render_poses = testposes
     
     print(poses.shape, imgs.shape)
