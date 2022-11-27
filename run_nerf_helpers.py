@@ -21,6 +21,7 @@ class Embedder:
         embed_fns = []
         d = self.kwargs['input_dims']
         out_dim = 0
+        # include the origin coordinates
         if self.kwargs['include_input']:
             embed_fns.append(lambda x : x)
             out_dim += d
@@ -29,33 +30,72 @@ class Embedder:
         N_freqs = self.kwargs['num_freqs']
         
         if self.kwargs['log_sampling']:
-            freq_bands = 2.**torch.linspace(0., max_freq, steps=N_freqs)
+            # use log steps like the essay
+            freq_bands = 2. ** torch.linspace(0., max_freq, steps=N_freqs)
         else:
-            freq_bands = torch.linspace(2.**0., 2.**max_freq, steps=N_freqs)
-            
+            # use normal steps
+            freq_bands = torch.linspace(2.** 0., 2. ** max_freq, steps=N_freqs)
+        
+        # generate the main part of embedding function \gamma
+        # recap that \gamma(p) = (sin(2^0 πp), cos(2^0 πp), ..., sin(2^{L-1} πp), cos(2^{L-1} πp))
         for freq in freq_bands:
             for p_fn in self.kwargs['periodic_fns']:
                 embed_fns.append(lambda x, p_fn=p_fn, freq=freq : p_fn(x * freq))
                 out_dim += d
-                    
+        
+        """
+            embed_fns: lists of function, [2 * N_freq]. the embedding function \gamma
+            out_dim: int. the output dimension of the embedding function. The value is d * 2 * N_freq (+ d (if `include_input` is True))
+        """
         self.embed_fns = embed_fns
         self.out_dim = out_dim
         
     def embed(self, inputs):
-        return torch.cat([fn(inputs) for fn in self.embed_fns], -1)
+        """
+            Embedding Process
+
+            Args:
+                input:
+            
+            Returns:
+                <class 'torch.Tensor'> [---]. 
+        """
+        return torch.cat([fn(inputs) for fn in self.embed_fns], dim=-1)
 
 
 def get_embedder(multires, i=0):
+    '''
+        Get the embedder of the corresponding dimensions
+
+        Args:
+            multries: int. log2 of max freq for positional or directional encoding, namely 'L' in the essay
+            i: int. set 0 for default positional encoding, -1 for none
+
+        Returns:
+            embed: function. the embedding function
+            embedder_obj.out_dim: int. the dim of input
+    '''
+
+    # `i == -1` indicates no embedding 
     if i == -1:
         return nn.Identity(), 3
     
+    """
+        include_input: boolean, whether to include the origin coordinates when encoding
+        input_dims: int, the dims of input
+        max_freq_log2: int
+        num_freq: int
+        log_sampling: boolean, whether to use log steps
+        periodic_fns: list of functions, functions used to position encoding
+    """
+
     embed_kwargs = {
-                'include_input' : True,
-                'input_dims' : 3,
-                'max_freq_log2' : multires-1,
-                'num_freqs' : multires,
-                'log_sampling' : True,
-                'periodic_fns' : [torch.sin, torch.cos],
+        'include_input' : True,
+        'input_dims' : 3,
+        'max_freq_log2' : multires - 1,
+        'num_freqs' : multires,
+        'log_sampling' : True,
+        'periodic_fns' : [torch.sin, torch.cos],
     }
     
     embedder_obj = Embedder(**embed_kwargs)
@@ -66,8 +106,16 @@ def get_embedder(multires, i=0):
 # Model
 class NeRF(nn.Module):
     def __init__(self, D=8, W=256, input_ch=3, input_ch_views=3, output_ch=4, skips=[4], use_viewdirs=False):
-        """ 
         """
+            Args:
+                D: int. number of layers.
+                W: int. number of channels.
+                input_ch: int. number of position input channel.
+                input_ch_views: int, number of direction input channel.
+                skips: int. index of the layer that adds position encoding again.
+                use_viewdirs: boolean. whether to use 5D input.
+        """
+
         super(NeRF, self).__init__()
         self.D = D
         self.W = W
@@ -76,43 +124,62 @@ class NeRF(nn.Module):
         self.skips = skips
         self.use_viewdirs = use_viewdirs
         
+        ## Build the MLP layers
+        # the first 8 MLP layers dealing with position information
+        # !NOTE at layer `skips`, add position encoding again
         self.pts_linears = nn.ModuleList(
-            [nn.Linear(input_ch, W)] + [nn.Linear(W, W) if i not in self.skips else nn.Linear(W + input_ch, W) for i in range(D-1)])
+            [nn.Linear(input_ch, W)] + [nn.Linear(W, W) if i not in self.skips else nn.Linear(W + input_ch, W) for i in range(D - 1)])
         
-        ### Implementation according to the official code release (https://github.com/bmild/nerf/blob/master/run_nerf_helpers.py#L104-L105)
-        self.views_linears = nn.ModuleList([nn.Linear(input_ch_views + W, W//2)])
+        # the MLP layers dealing with direction information
 
+        ### Implementation according to the official code release (https://github.com/bmild/nerf/blob/master/run_nerf_helpers.py#L104-L105)
+        self.views_linears = nn.ModuleList([nn.Linear(input_ch_views + W, W // 2)])
         ### Implementation according to the paper
-        # self.views_linears = nn.ModuleList(
-        #     [nn.Linear(input_ch_views + W, W//2)] + [nn.Linear(W//2, W//2) for i in range(D//2)])
+        # self.views_linears = nn.ModuleList([nn.Linear(input_ch_views + W, W // 2)] + [nn.Linear(W // 2, W // 2) for i in range(D // 2)])
         
+        # output layers
         if use_viewdirs:
+            # if it's 5D input, the output contains features, alpha(density) and RGB colors.
             self.feature_linear = nn.Linear(W, W)
             self.alpha_linear = nn.Linear(W, 1)
-            self.rgb_linear = nn.Linear(W//2, 3)
+            self.rgb_linear = nn.Linear(W // 2, 3)
         else:
+            # if it's 3D input, the output is only density.
             self.output_linear = nn.Linear(W, output_ch)
 
     def forward(self, x):
+        """
+            Encode input (pos + dir) to RGB + sigma
+
+            Args:
+                x:  <class 'torch.Tensor'>, [batch, x, y, z, dir]. the packed input of position and direction
+
+            Returns:
+                output:  <class 'numpy.ndarray'>, [batch, RGB, sigma]. the packed output of RGB and sigma
+        """
+
         input_pts, input_views = torch.split(x, [self.input_ch, self.input_ch_views], dim=-1)
+        # Propagate through the layers dealing with position
         h = input_pts
         for i, l in enumerate(self.pts_linears):
             h = self.pts_linears[i](h)
             h = F.relu(h)
+            # if `i` is the `skip` layer, then add position encoding again
             if i in self.skips:
-                h = torch.cat([input_pts, h], -1)
+                h = torch.cat([input_pts, h], dim=-1)
 
+        # Propagate through the layers dealing with direction and get the raw output
         if self.use_viewdirs:
             alpha = self.alpha_linear(h)
             feature = self.feature_linear(h)
-            h = torch.cat([feature, input_views], -1)
+            h = torch.cat([feature, input_views], dim=-1)
         
             for i, l in enumerate(self.views_linears):
                 h = self.views_linears[i](h)
                 h = F.relu(h)
 
             rgb = self.rgb_linear(h)
-            outputs = torch.cat([rgb, alpha], -1)
+            outputs = torch.cat([rgb, alpha], dim=-1)
         else:
             outputs = self.output_linear(h)
 
@@ -151,24 +218,56 @@ class NeRF(nn.Module):
 
 # Ray helpers
 def get_rays(H, W, K, c2w):
-    i, j = torch.meshgrid(torch.linspace(0, W-1, W), torch.linspace(0, H-1, H))  # pytorch's meshgrid has indexing='ij'
+    """
+        Get the origins and directions of all rays of the image in the world coordinate.
+
+        Args:
+            H: int. Height of image in pixels
+            W: int. Width of image in pixels
+            K: <class 'numpy.ndarray'>, [3, 3]. Intrinsic matrix.
+            c2w:  <class 'torch.Tensor'>, [3, 4]. Extrinsic matrix.
+        
+        Returns:
+            rays_o:  <class 'torch.Tensor'>, [H, W, 3]. coordinates of camera. 
+            rays_d:  <class 'torch.Tensor'>, [H, W, 3]. directions of rays.
+    """
+
+    i, j = torch.meshgrid(torch.linspace(0, W - 1, W), torch.linspace(0, H - 1, H))  # pytorch's meshgrid has indexing='ij'
+    # `torch.meshgrid()` is the transpose of `np.meshgrid`, thus we need to transpose here.
     i = i.t()
     j = j.t()
-    dirs = torch.stack([(i-K[0][2])/K[0][0], -(j-K[1][2])/K[1][1], -torch.ones_like(i)], -1)
+    dirs = torch.stack([(i - K[0][2]) / K[0][0], -(j - K[1][2]) / K[1][1], -torch.ones_like(i)], axis=-1)
     # Rotate ray directions from camera frame to the world frame
-    rays_d = torch.sum(dirs[..., np.newaxis, :] * c2w[:3,:3], -1)  # dot product, equals to: [c2w.dot(dir) for dir in dirs]
+    rays_d = torch.sum(dirs[..., np.newaxis, :] * c2w[:3, :3], axis=-1)  # dot product, equals to: [c2w.dot(dir) for dir in dirs]
     # Translate camera frame's origin to the world frame. It is the origin of all rays.
-    rays_o = c2w[:3,-1].expand(rays_d.shape)
+    rays_o = c2w[:3, -1].expand(rays_d.shape)
     return rays_o, rays_d
 
 
 def get_rays_np(H, W, K, c2w):
+    """
+        Get the origins and directions of all rays of the image in the world coordinate.
+
+        Args:
+            H: int. Height of image in pixels
+            W: int. Width of image in pixels
+            K: <class 'numpy.ndarray'>, [3, 3]. Intrinsic matrix.
+            c2w: <class 'numpy.ndarray'>, [3, 4]. Extrinsic matrix.
+        
+        Returns:
+            rays_o: <class 'numpy.ndarray'>, [H, W, 3]. coordinates of camera. 
+            rays_d: <class 'numpy.ndarray'>, [H, W, 3]. directions of rays.
+    """
+
     i, j = np.meshgrid(np.arange(W, dtype=np.float32), np.arange(H, dtype=np.float32), indexing='xy')
-    dirs = np.stack([(i-K[0][2])/K[0][0], -(j-K[1][2])/K[1][1], -np.ones_like(i)], -1)
+    # `dirs` = K.inv @ (u, v, 1)
+    # `dirs` = [(i - W / 2) / f, -(j - H / 2) / f, -1]
+    dirs = np.stack([(i - K[0][2]) / K[0][0], -(j - K[1][2]) / K[1][1], -np.ones_like(i)], axis=-1) # [H, W, 3]
     # Rotate ray directions from camera frame to the world frame
-    rays_d = np.sum(dirs[..., np.newaxis, :] * c2w[:3,:3], -1)  # dot product, equals to: [c2w.dot(dir) for dir in dirs]
+    # rays_d = c2w @ dirs
+    rays_d = np.sum(dirs[..., np.newaxis, :] * c2w[:3, :3], axis=-1)  # dot product, equals to: [c2w.dot(dir) for dir in dirs]
     # Translate camera frame's origin to the world frame. It is the origin of all rays.
-    rays_o = np.broadcast_to(c2w[:3,-1], np.shape(rays_d))
+    rays_o = np.broadcast_to(c2w[:3, -1], np.shape(rays_d))
     return rays_o, rays_d
 
 

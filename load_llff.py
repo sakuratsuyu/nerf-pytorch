@@ -79,6 +79,21 @@ def _minify(basedir, factors=[], resolutions=[]):
         
         
 def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
+    '''
+        Load image data from the files.
+
+        Args:
+            basedir: string. File path of image data.
+            factor: int. Downsample factor.
+            width: int. Width to downsample to.
+            height: int. Height to downsample to.
+            load_imgs: boolean. Whether to return image data.
+        
+        Returns:
+            poses: <class 'numpy.ndarray'>, [N, ]
+            bds:
+    '''
+
 
     '''
     `*.npy` is a file created by numpy.
@@ -143,7 +158,7 @@ def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
     poses[:2, 4, :] = np.array(sh[:2]).reshape([2, 1])
     poses[2, 4, :] = poses[2, 4, :] * 1./factor
     '''
-    values stored in `poses[:, :, i]` of each image
+    !NOTE: values stored in `poses[:, :, i]` of each image
         - R is a 3 by 3 roation matrix.
         - t is the translation vector.
         - H, W, f are the height, width, and focal length.
@@ -233,7 +248,7 @@ def render_path_spiral(c2w, up, rads, focal, zdelta, zrate, rots, N):
         Generate the poses to render.
         The path is a spiral.
 
-        c2w: world to camera matrix
+        c2w: camera to world matrix
         up: Up Vector
         rads: --
         focal: focal length
@@ -267,11 +282,10 @@ def recenter_poses(poses):
     poses_ = poses + 0
 
     '''
-        `c2w` is the 'average' world to camera matrix.
-        Actually, `np.linalg.inv(c2w)` is the Camera TO World matrix and thus the name of the variable `c2w`.
+        `c2w` is the 'average' camera to world matrix.
     '''
 
-    # Calculate the average world to camera matrix
+    # Calculate the average camera to world matrix
     c2w = poses_avg(poses)
     bottom = np.reshape([0, 0, 0, 1.], [1, 4])
     c2w = np.concatenate([c2w[:, :4], bottom], -2)
@@ -371,11 +385,11 @@ def load_llff_data(basedir, factor=8, recenter=True, bd_factor=.75, spherify=Fal
     print('Loaded', basedir, bds.min(), bds.max())
     
     '''
-    Correct rotation matrix ordering and move variable dim to axis 0
-    `poses` (3, 5, 20) -> (20, 3, 5)
-        > R matrix is in the form [down right back] instead of [right up back] due to LLFF standard
-    `bds` (2, 20) -> (20, 2)
-    `images` (378, 504, 3, 20) -> (20, 378, 504, 3)
+        Correct rotation matrix ordering and move variable dim to axis 0
+        `poses` (3, 5, 20) -> (20, 3, 5)
+            > R matrix is in the form [down right back] instead of [right up back] due to LLFF standard
+        `bds` (2, 20) -> (20, 2)
+        `images` (378, 504, 3, 20) -> (20, 378, 504, 3)
     '''
     poses = np.concatenate([poses[:, 1:2, :], -poses[:, 0:1, :], poses[:, 2:, :]], axis=1)
     poses = np.moveaxis(poses, -1, 0).astype(np.float32)
